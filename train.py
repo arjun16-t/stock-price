@@ -56,15 +56,22 @@ def prepare_data():
 
 # ── Compile ───────────────────────────────────────────────────────────────────
 
-def compile_model(model: Model):
+def compile_model(model: Model, down_weight: float):
     """
     Compile a model with the shared loss, metrics and optimizer.
     """
+    def weighted_binary_crossentropy(y_true, y_pred):
+        # Standard cross entropy
+        bce = tf.keras.losses.binary_crossentropy(y_true, y_pred)
+        
+        weight_vector = y_true * 1.0 + (1.0 - y_true) * down_weight
+        return tf.reduce_mean(bce * tf.cast(weight_vector, tf.float32))
+    
     model.compile(
         optimizer=Adam(LR),
         loss={
             'price': 'mse',
-            'direction': 'binary_crossentropy'
+            'direction': weighted_binary_crossentropy
         },
         loss_weights={
             'price': 1.0,
@@ -117,7 +124,16 @@ def train_model(model:Model, model_name: str, splits: tuple):
     y_dir_train, y_dir_val, y_dir_test,
     lc_train, lc_val, lc_test) = splits
 
-    compiled_model = compile_model(model)
+    y_dir_flat = y_dir_train.flatten()
+    num_down = np.sum(y_dir_flat == 0)
+    num_up = np.sum(y_dir_flat == 1)
+    
+    down_weight = num_up / num_down if num_down > 0 else 1.0
+    
+    print(f"\033[93mApplying Down-Class Weight Factor: {down_weight:.2f}\033[0m")
+
+    compiled_model = compile_model(model, down_weight)
+
     history = compiled_model.fit(x = X_train,
                                 y = {'price': y_price_train, 'direction': y_dir_train},
                                 validation_data=(X_val, {'price': y_price_val, 'direction': y_dir_val}),

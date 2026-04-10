@@ -3,3 +3,6 @@ __pycache__/
 *$py.class
 stockenv/
 .ipynb_checkpoints
+testing.ipynb
+temp.py
+saved_models/

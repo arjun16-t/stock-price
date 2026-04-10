@@ -166,7 +166,7 @@ def evaluate_model(model_name: str, splits: tuple):
     _, _, last_closes_test) = splits
 
     model_path = f'{MODELS_DIR}/{model_name}.keras'
-    model = load_model(model_path)
+    model = load_model(model_path, compile=False)
 
     predictions = model.predict(X_test)
 
