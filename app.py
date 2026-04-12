@@ -6,7 +6,8 @@ import joblib
 import json
 import plotly.graph_objects as go
 from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import load_model
+
+from keras.src.models.functional import Functional
 
 from data.fetch import fetch_for_inference
 from data.features import add_technical_indicators, add_targets, get_feature_columns
@@ -26,44 +27,39 @@ st.set_page_config(
 # ── Load Resources (cached) ───────────────────────────────────────────────────
 
 @st.cache_resource
-def load_models():
+def load_models() -> dict[str, Functional]:
     """
     Load all 3 saved models once and cache them.
-
-    TODO:
-    1. Load gru, lstm, transformer from MODELS_DIR using load_model()
-    2. Return dict: {'gru': model, 'lstm': model, 'transformer': model}
-
-    Note: @st.cache_resource means this runs only once per session.
-    Without caching, models reload on every user interaction — very slow.
     """
-    pass
+    from tensorflow.keras.models import load_model      # type: ignore
+    models = {}
+
+    model_list = ['gru', 'lstm', 'transformer']
+    for model in model_list:
+        curr_model = load_model(f"{MODELS_DIR}/{model}.keras", compile=False)
+        models[model] = curr_model
+    
+    return models
 
 
 @st.cache_resource
-def load_scalers():
+def load_scalers() -> dict:
     """
     Load saved scalers dict from disk.
-
-    TODO: joblib.load() from MODELS_DIR/scalers.joblib
     """
-    pass
-
+    scalers = joblib.load(f"{MODELS_DIR}/scalers.joblib")
+    return scalers
 
 @st.cache_data
-def load_ticker_map():
+def load_ticker_map() -> dict[str, str]:
     """
     Load company name → NSE ticker mapping from tickers.json.
-
-    TODO:
-    1. Open and json.load() TICKERS_JSON
-    2. Return the dict
-
-    tickers.json format: {"Reliance Industries": "RELIANCE.NS", ...}
-    Build this file manually — Google "Nifty 50 company names and NSE tickers"
-    and create the mapping. Takes 10 minutes.
     """
-    pass
+    tickers = {}
+    with open("tickers.json", "r") as file:
+        tickers = json.load(file)
+    
+    return tickers
 
 
 # ── Inference Pipeline ────────────────────────────────────────────────────────
@@ -71,46 +67,51 @@ def load_ticker_map():
 def prepare_inference_data(ticker: str, scalers: dict):
     """
     Fetch and prepare data for a single stock at inference time.
-
-    TODO:
-    1. Call fetch_for_inference(ticker) → raw df
-    2. If df is empty or too short → return None, None, None
-
-    3. Call add_technical_indicators(df)
-    4. Drop NaNs
-    5. Check we have at least WINDOW_SIZE rows → return None if not
-
-    6. Get the scaler for this ticker:
-       - If ticker in scalers → use saved scaler (transform only, don't fit)
-       - If ticker NOT in scalers → fit a fresh MinMaxScaler on this data
-         (this handles stocks outside Nifty 50)
-
-    7. Scale feature columns → scaled_data
-    8. Take LAST WINDOW_SIZE rows as input window → shape (1, WINDOW_SIZE, num_features)
-       Hint: scaled_data[-WINDOW_SIZE:] then np.expand_dims(..., axis=0)
-
-    9. Get last_close = df['Close'].iloc[-1] (for converting prediction back to ₹)
-
-    10. Return (input_window, last_close, df)
-        df is returned for plotting the historical chart
     """
-    pass
+    stock = fetch_for_inference(ticker, "1y")
+    if not isinstance(stock, pd.DataFrame) or stock.empty:
+        print(f"Invalid Stock: {stock}  |  Empty Results")
+        return None, None, None
+    
+    stock = add_technical_indicators(stock)
+    if len(stock) < WINDOW_SIZE:
+        st.error("Not enough data after computing indicators.")
+        return None, None, None
+    
+    if ticker in scalers.keys():
+        scaler = scalers[ticker]
+        scaled_stock = scaler.transform(stock[get_feature_columns()])
+    else:
+        scaler = MinMaxScaler()
+        scaled_stock = scaler.fit_transform(stock[get_feature_columns()])
+    
+    input_window = scaled_stock[-WINDOW_SIZE:]
+    input_window = np.expand_dims(input_window, axis=0)     # shape (1, WINDOW_SIZE, num_features)
 
+    last_close = stock['Close'].iloc[-1]
+
+    return (input_window, last_close, stock)
 
 def predict(model, input_window: np.ndarray, last_close: float):
     """
     Run inference and convert outputs to interpretable values.
-
-    TODO:
-    1. model.predict(input_window) → [pred_return, pred_dir_prob]
-    2. predicted_price = last_close * (1 + pred_return.flatten()[0])
-    3. direction_prob = pred_dir_prob.flatten()[0]
-    4. direction_label = 'UP ↑' if direction_prob > 0.5 else 'DOWN ↓'
-    5. confidence = direction_prob if UP, else (1 - direction_prob)
-    6. Return (predicted_price, direction_label, confidence)
     """
-    pass
+    predictions = model.predict(input_window)
+    if isinstance(predictions, dict):
+        pred_returns = predictions['price'].flatten()
+        pred_dir_prob = predictions['direction'].flatten()
+    else:
+        pred_returns = predictions[0].flatten()
+        pred_dir_prob = predictions[1].flatten()
+    
+    pred_return = predictions[0].flatten()[0]
+    predicted_price = float(last_close) * (1 + pred_return)
 
+    direction_prob = pred_dir_prob.flatten()[0]
+    direction_label = 'UP ↑' if direction_prob > 0.5 else 'DOWN ↓'
+    confidence = direction_prob if direction_prob > 0.5 else (1 - direction_prob)
+
+    return (predicted_price, direction_label, confidence)
 
 # ── UI Components ─────────────────────────────────────────────────────────────
 

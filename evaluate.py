@@ -203,16 +203,6 @@ def evaluate_model(model_name: str, splits: tuple):
 def compare_all_models(model_names: list, splits: tuple):
     """
     Run evaluate_model() for all 3 models and print comparison table.
-
-    TODO:
-    1. Loop over model_names, collect metrics for each
-    2. Print a comparison table:
-        Model       | MAE(₹) | RMSE(₹) | MAPE(%) | R²   | Dir Acc | F1
-        ----------------------------------------------------------------
-        gru         | ...    | ...     | ...     | ...  | ...     | ...
-        lstm        | ...    | ...     | ...     | ...  | ...     | ...
-        transformer | ...    | ...     | ...     | ...  | ...     | ...
-    3. Also call baseline_metrics() and print it alongside for comparison
     """
     all_metrics = {}
 
