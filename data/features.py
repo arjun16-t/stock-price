@@ -28,7 +28,7 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
                'BBP_20_2.0_2.0': 'BBP'
                })
 
-   df = df.drop(['BBB', 'BBL', 'BBM', 'BBU', 'Date'], axis=1)
+   df = df.drop(['BBB', 'BBL', 'BBM', 'BBU'], axis=1)
    df.dropna(inplace=True)
    return df
 
