@@ -36,3 +36,10 @@ After applying class weights (1.38x for "Down" days), the confusion matrix shows
 ![GRU Confusion Matrix](results/plots/gru_confusion_matrix.png)
 
 ---
+
+## Tech Stack
+- **Deep Learning:** TensorFlow, Keras
+- **Data Science:** NumPy, Pandas, Scikit-learn
+- **Financial Data:** yfinance, pandas_ta
+- **Frontend:** Streamlit
+- **Visualization:** Matplotlib
