@@ -38,8 +38,8 @@ After applying class weights (1.38x for "Down" days), the confusion matrix shows
 ---
 
 ## Tech Stack
-- **Deep Learning:** TensorFlow, Keras
+- **Deep Learning:** TensorFlow, Keras, FinBERT
 - **Data Science:** NumPy, Pandas, Scikit-learn
-- **Financial Data:** yfinance, pandas_ta
-- **Frontend:** Streamlit
-- **Visualization:** Matplotlib
+- **Financial Data:** yfinance, pandas_ta, Google News API
+- **Frontend:** Streamlit, Django
+- **Visualization:** Matplotlib, Plotly
