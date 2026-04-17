@@ -2,13 +2,13 @@ import yfinance as yf
 import feedparser
 import requests
 from datetime import datetime, timedelta
-from transformers import pipeline
+from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
 import numpy as np
 import streamlit as st
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
-FINBERT_MODEL   = "ProsusAI/finbert"
+MODEL_NAME      = "project-aps/finbert-finetune"
 NEWS_LOOKBACK   = 7      # days
 MIN_HEADLINES   = 3      # minimum for sentiment to be meaningful
 RECENCY_WEIGHTS = [1.0, 0.85, 0.70, 0.55, 0.40, 0.25, 0.10]  # day 0 → day 6
@@ -32,8 +32,19 @@ def load_finbert():
     Note: First run downloads ~400MB to HuggingFace cache (~/.cache/huggingface)
     Subsequent runs load from cache instantly.
     """
-    pass
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
+    label_map = {0: "neutral", 1: "negative", 2: "positive"}
+    model.config.id2label = label_map
+    model.config.label2id = {v: k for k, v in label_map.items()}
 
+    pipe = pipeline("text-classification",
+                    model=model,
+                    tokenizer=tokenizer,
+                    device=0,
+                    return_all_scores=True)
+    
+    return pipe
 
 # ── News Fetching ─────────────────────────────────────────────────────────────
 
