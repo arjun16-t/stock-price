@@ -20,17 +20,6 @@ RECENCY_WEIGHTS = [1.0, 0.85, 0.70, 0.55, 0.40, 0.25, 0.10]  # day 0 → day 6
 def load_finbert():
     """
     Load FinBERT pipeline once and cache.
-
-    TODO:
-    1. Use transformers.pipeline() with:
-       - task: "text-classification"
-       - model: FINBERT_MODEL
-       - return_all_scores: True  ← gives probabilities for all 3 classes
-       - device: -1               ← force CPU (you don't have TF GPU configured)
-    2. Return the pipeline
-
-    Note: First run downloads ~400MB to HuggingFace cache (~/.cache/huggingface)
-    Subsequent runs load from cache instantly.
     """
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
     model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
@@ -49,7 +38,7 @@ def load_finbert():
 # ── News Fetching ─────────────────────────────────────────────────────────────
 
 def fetch_yfinance_news(ticker: str) -> list[dict]:
-    """
+    """s: l
     Fetch news headlines from yfinance for a given ticker.
 
     TODO:
@@ -63,7 +52,30 @@ def fetch_yfinance_news(ticker: str) -> list[dict]:
 
     Return empty list if anything fails — never crash on news fetch.
     """
-    pass
+    stock: list = yf.Ticker(ticker)
+    
+    ls = []
+    for new in stock.news:
+        dic = {}
+        dic['provider'] = {
+            'providerName' : new['content']['provider']['displayName'],
+            'providerUrl' : new['content']['provider']['url']
+        }
+        dic['title'] = new['content']['title']
+        dic['summary'] = new['content']['summary']
+        
+        time = new['content']['pubDate']
+        dt = datetime.fromisoformat(time.replace("Z", "+00:00"))
+        dic['publishTime'] = dt
+        dic['url'] = new['content']['canonicalUrl']['url']
+        
+        ls.append(dic)
+    
+    if len(ls) < MIN_HEADLINES:
+        return []
+    
+    return ls[:NEWS_LOOKBACK]
+
 
 
 def fetch_google_news(company_name: str) -> list[dict]:
