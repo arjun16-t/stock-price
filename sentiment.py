@@ -96,9 +96,10 @@ def fetch_google_news(company_name: str) -> list[dict]:
     4. Filter to last NEWS_LOOKBACK days
     5. Return same format as fetch_yfinance_news: {'title', 'publisher', 'date'}
 
-    Install: pip install feedparser
     """
-    pass
+    query = company_name.replace(' ', '+') + '+NSE+stock'
+    url = f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
+    feed = dict(feedparser.parse(url))
 
 
 def fetch_news(ticker: str, company_name: str) -> list[dict]:
@@ -128,6 +129,7 @@ def score_headline(finbert, headline: str) -> float:
     """
     Score a single headline using FinBERT.
     Returns a float in [-1, 1].
+
 
     TODO:
     1. Run finbert(headline) → list of dicts like:
