@@ -7,3 +7,4 @@ testing.ipynb
 temp.py
 saved_models/
 *.csv
+.env

@@ -101,6 +101,28 @@ def fetch_google_news(company_name: str) -> list[dict]:
     url = f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
     feed = dict(feedparser.parse(url))
 
+    ls = []
+    for entry in feed.entries:
+        dic = {}
+        dic['provider'] = {
+            'providerName' : new['content']['provider']['displayName'],
+            'providerUrl' : new['content']['provider']['url']
+        }
+        dic['title'] = new['content']['title']
+        dic['summary'] = new['content']['summary']
+        
+        time = new['content']['pubDate']
+        dt = datetime.fromisoformat(time.replace("Z", "+00:00"))
+        dic['publishTime'] = dt
+        dic['url'] = new['content']['canonicalUrl']['url']
+        
+        ls.append(dic)
+    
+    if len(ls) < MIN_HEADLINES:
+        return []
+    
+    return ls[:NEWS_LOOKBACK]
+
 
 def fetch_news(ticker: str, company_name: str) -> list[dict]:
     """
