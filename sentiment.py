@@ -16,6 +16,45 @@ NEWS_LOOKBACK   = 7      # days
 MIN_HEADLINES   = 3      # minimum for sentiment to be meaningful
 RECENCY_WEIGHTS = [1.0, 0.85, 0.70, 0.55, 0.40, 0.25, 0.10]  # day 0 → day 6
 
+def _get_article_url(url):
+    try:
+        resp = requests.get(url)
+        data = BeautifulSoup(resp.text, 'html.parser').select_one('c-wiz[data-p]').get('data-p')
+        obj = json.loads(data.replace('%.@.', '["garturlreq",'))
+
+        payload = {
+            'f.req': json.dumps([[['Fbv4je', json.dumps(obj[:-6] + obj[-2:]), 'null', 'generic']]])
+        }
+
+        headers = {
+        'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
+        }
+
+        url = "https://news.google.com/_/DotsSplashUi/data/batchexecute"
+        response = requests.post(url, headers=headers, data=payload)
+        array_string = json.loads(response.text.replace(")]}'", ""))[0][2]
+        article_url = json.loads(array_string)[1]
+
+        return article_url
+    except Exception:
+        return url
+
+def _deduplicate(articles: list[dict]) -> list[dict]:
+    unique = []
+    for article in articles:
+        is_duplicate = False
+        for seen in unique:
+            a_words = set(article['title'].lower().split())
+            b_words = set(seen['title'].lower().split())
+            overlap = len(a_words & b_words) / len(a_words | b_words)
+            if overlap > 0.8:
+                is_duplicate = True
+                break
+        if not is_duplicate:
+            unique.append(article)
+    return unique
+
 
 # ── Load FinBERT ──────────────────────────────────────────────────────────────
 
@@ -55,7 +94,7 @@ def fetch_yfinance_news(ticker: str) -> list[dict]:
 
     Return empty list if anything fails — never crash on news fetch.
     """
-    stock: list = yf.Ticker(ticker)
+    stock = yf.Ticker(ticker)
     
     ls = []
     for new in stock.news:
@@ -67,17 +106,20 @@ def fetch_yfinance_news(ticker: str) -> list[dict]:
         dic['title'] = new['content']['title']
         dic['summary'] = new['content']['summary']
         
-        time = new['content']['pubDate']
-        dt = datetime.fromisoformat(time.replace("Z", "+00:00"))
+        pub_date = new['content']['pubDate']
+        dt = datetime.fromisoformat(pub_date.replace("Z", "+00:00"))
         dic['publishTime'] = dt
         dic['url'] = new['content']['canonicalUrl']['url']
         
         ls.append(dic)
     
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(days=NEWS_LOOKBACK)
+    ls = [article for article in ls if article['publishTime'] >= cutoff]
+    
     if len(ls) < MIN_HEADLINES:
         return []
     
-    return ls[:NEWS_LOOKBACK]
+    return ls
 
 
 
@@ -100,37 +142,14 @@ def fetch_google_news(company_name: str) -> list[dict]:
     5. Return same format as fetch_yfinance_news: {'title', 'publisher', 'date'}
 
     """
-
-    def get_article_url(url):
-        resp = requests.get(url)
-        data = BeautifulSoup(resp.text, 'html.parser').select_one('c-wiz[data-p]').get('data-p')
-        obj = json.loads(data.replace('%.@.', '["garturlreq",'))
-
-        payload = {
-            'f.req': json.dumps([[['Fbv4je', json.dumps(obj[:-6] + obj[-2:]), 'null', 'generic']]])
-        }
-
-        headers = {
-        'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
-        }
-
-        url = "https://news.google.com/_/DotsSplashUi/data/batchexecute"
-        response = requests.post(url, headers=headers, data=payload)
-        array_string = json.loads(response.text.replace(")]}'", ""))[0][2]
-        article_url = json.loads(array_string)[1]
-
-        return article_url
-    
-
     query = company_name.replace(' ', '+') + '+NSE+stock'
     url = f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
     feed = dict(feedparser.parse(url))
 
     ls = []
-    for entry in feed['entries'][:NEWS_LOOKBACK]:
+    for entry in feed['entries'][:20]:
         dic = {}
-        link = get_article_url(entry['link'])
+        link = _get_article_url(entry['link'])
         dic['provider'] = {
             'providerName' : entry['source']['title'],
             'providerUrl' : entry['source']['url']
@@ -144,6 +163,9 @@ def fetch_google_news(company_name: str) -> list[dict]:
         dic['url'] = link
         ls.append(dic)
     
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(days=NEWS_LOOKBACK)
+    ls = [article for article in ls if article['publishTime'] >= cutoff]
+
     if len(ls) < MIN_HEADLINES:
         return []
     
@@ -168,8 +190,18 @@ def fetch_news(ticker: str, company_name: str) -> list[dict]:
     If total headlines < MIN_HEADLINES → return empty list
     (caller will handle fallback to price-only)
     """
-    pass
+    yfin = fetch_yfinance_news(ticker)
+    rss = fetch_google_news(company_name)
+    ls = yfin + rss
 
+    ordered_list = _deduplicate(ls)
+    
+    ordered_list.sort(key=lambda x: x['publishTime'], reverse=True)
+
+    if len(ordered_list) < MIN_HEADLINES:
+        return []
+    
+    return ordered_list
 
 # ── Sentiment Scoring ─────────────────────────────────────────────────────────
 
@@ -188,7 +220,7 @@ def score_headline(finbert, headline: str) -> float:
     3. Return positive_prob - negative_prob
        → +1.0 = fully positive, -1.0 = fully negative, 0 = neutral
 
-    Truncate headline to 512 chars before passing to FinBERT —
+    Truncate headline to 400 chars before passing to FinBERT —
     transformer models have max token limit.
     """
     pass
