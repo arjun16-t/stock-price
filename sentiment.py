@@ -1,10 +1,13 @@
 import yfinance as yf
 import feedparser
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import time
 from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
 import numpy as np
 import streamlit as st
+from bs4 import BeautifulSoup
+import json
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -38,7 +41,7 @@ def load_finbert():
 # ── News Fetching ─────────────────────────────────────────────────────────────
 
 def fetch_yfinance_news(ticker: str) -> list[dict]:
-    """s: l
+    """
     Fetch news headlines from yfinance for a given ticker.
 
     TODO:
@@ -97,31 +100,54 @@ def fetch_google_news(company_name: str) -> list[dict]:
     5. Return same format as fetch_yfinance_news: {'title', 'publisher', 'date'}
 
     """
+
+    def get_article_url(url):
+        resp = requests.get(url)
+        data = BeautifulSoup(resp.text, 'html.parser').select_one('c-wiz[data-p]').get('data-p')
+        obj = json.loads(data.replace('%.@.', '["garturlreq",'))
+
+        payload = {
+            'f.req': json.dumps([[['Fbv4je', json.dumps(obj[:-6] + obj[-2:]), 'null', 'generic']]])
+        }
+
+        headers = {
+        'content-type': 'application/x-www-form-urlencoded;charset=UTF-8',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
+        }
+
+        url = "https://news.google.com/_/DotsSplashUi/data/batchexecute"
+        response = requests.post(url, headers=headers, data=payload)
+        array_string = json.loads(response.text.replace(")]}'", ""))[0][2]
+        article_url = json.loads(array_string)[1]
+
+        return article_url
+    
+
     query = company_name.replace(' ', '+') + '+NSE+stock'
     url = f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
     feed = dict(feedparser.parse(url))
 
     ls = []
-    for entry in feed.entries:
+    for entry in feed['entries'][:NEWS_LOOKBACK]:
         dic = {}
+        link = get_article_url(entry['link'])
         dic['provider'] = {
-            'providerName' : new['content']['provider']['displayName'],
-            'providerUrl' : new['content']['provider']['url']
+            'providerName' : entry['source']['title'],
+            'providerUrl' : entry['source']['url']
         }
-        dic['title'] = new['content']['title']
-        dic['summary'] = new['content']['summary']
-        
-        time = new['content']['pubDate']
-        dt = datetime.fromisoformat(time.replace("Z", "+00:00"))
+        dic['title'] = entry['title']
+        dic['summary'] = entry['title']
+
+        time_ = entry['published_parsed']
+        dt = datetime.fromtimestamp(time.mktime(time_), tz=timezone.utc)
         dic['publishTime'] = dt
-        dic['url'] = new['content']['canonicalUrl']['url']
-        
+        dic['url'] = link
         ls.append(dic)
     
     if len(ls) < MIN_HEADLINES:
         return []
     
-    return ls[:NEWS_LOOKBACK]
+    return ls
 
 
 def fetch_news(ticker: str, company_name: str) -> list[dict]:
