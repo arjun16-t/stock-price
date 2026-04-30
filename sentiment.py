@@ -2,6 +2,7 @@ import yfinance as yf
 import feedparser
 import requests
 from datetime import datetime, timedelta, timezone
+from collections import defaultdict
 import time
 from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
 import numpy as np
@@ -73,7 +74,7 @@ def load_finbert():
                     model=model,
                     tokenizer=tokenizer,
                     device=0,
-                    return_all_scores=True)
+                    top_k=None)
     
     return pipe
 
@@ -82,17 +83,6 @@ def load_finbert():
 def fetch_yfinance_news(ticker: str) -> list[dict]:
     """
     Fetch news headlines from yfinance for a given ticker.
-
-    TODO:
-    1. yf.Ticker(ticker).news → list of news dicts
-    2. Each dict has keys: 'title', 'publisher', 'providerPublishTime' (unix timestamp)
-    3. Filter to only last NEWS_LOOKBACK days
-       Hint: datetime.now() - timedelta(days=NEWS_LOOKBACK)
-       Convert providerPublishTime: datetime.fromtimestamp(article['providerPublishTime'])
-    4. Return list of dicts with keys: {'title', 'publisher', 'date'}
-       where date is a datetime object
-
-    Return empty list if anything fails — never crash on news fetch.
     """
     stock = yf.Ticker(ticker)
     
@@ -126,21 +116,6 @@ def fetch_yfinance_news(ticker: str) -> list[dict]:
 def fetch_google_news(company_name: str) -> list[dict]:
     """
     Fetch news from Google News RSS as fallback.
-
-    TODO:
-    1. Build RSS URL:
-       query = company_name.replace(' ', '+') + '+NSE+stock'
-       url = f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
-    
-    2. Use feedparser.parse(url) to parse RSS feed
-       Each entry has: entry.title, entry.published, entry.source.title
-    
-    3. Parse entry.published string to datetime:
-       Hint: use email.utils.parsedate_to_datetime() — handles RSS date format cleanly
-    
-    4. Filter to last NEWS_LOOKBACK days
-    5. Return same format as fetch_yfinance_news: {'title', 'publisher', 'date'}
-
     """
     query = company_name.replace(' ', '+') + '+NSE+stock'
     url = f"https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
@@ -175,20 +150,6 @@ def fetch_google_news(company_name: str) -> list[dict]:
 def fetch_news(ticker: str, company_name: str) -> list[dict]:
     """
     Combine yfinance + Google News, deduplicate, sort by date.
-
-    TODO:
-    1. Call fetch_yfinance_news(ticker)
-    2. Call fetch_google_news(company_name)
-    3. Combine both lists
-    4. Deduplicate: two headlines are duplicates if their titles share
-       more than 80% word overlap
-       Hint: use set intersection on lowercased words
-       overlap = len(set(a.split()) & set(b.split())) / len(set(a.split()) | set(b.split()))
-    5. Sort combined list by date descending (most recent first)
-    6. Return deduplicated sorted list
-
-    If total headlines < MIN_HEADLINES → return empty list
-    (caller will handle fallback to price-only)
     """
     yfin = fetch_yfinance_news(ticker)
     rss = fetch_google_news(company_name)
@@ -209,50 +170,68 @@ def score_headline(finbert, headline: str) -> float:
     """
     Score a single headline using FinBERT.
     Returns a float in [-1, 1].
-
-
-    TODO:
-    1. Run finbert(headline) → list of dicts like:
-       [{'label': 'positive', 'score': 0.82},
-        {'label': 'negative', 'score': 0.10},
-        {'label': 'neutral',  'score': 0.08}]
-    2. Extract positive_prob and negative_prob
-    3. Return positive_prob - negative_prob
-       → +1.0 = fully positive, -1.0 = fully negative, 0 = neutral
-
-    Truncate headline to 400 chars before passing to FinBERT —
-    transformer models have max token limit.
     """
-    pass
+    result = finbert(headline[:400])
+    scores = result[0] if isinstance(result, list) else result
+    print(scores, type(scores))
+    
+    pos = next(s['score'] for s in scores if s['label'] == 'positive')
+    neg = next(s['score'] for s in scores if s['label'] == 'negative')
 
+    return pos - neg
 
 def aggregate_sentiment(finbert, news: list[dict]) -> dict:
     """
     Score all headlines and aggregate into a single sentiment score.
-
-    TODO:
-    1. Group headlines by date (just the date part, not time)
-    2. For each day, average the scores of all headlines that day
-       → gives one score per day
-    3. Apply RECENCY_WEIGHTS:
-       - Sort days descending (most recent = index 0)
-       - Multiply each day's score by RECENCY_WEIGHTS[i]
-       - Weighted average: sum(score_i * weight_i) / sum(weights used)
-       Note: only use as many weights as you have days of data
-    4. Return a dict:
-       {
-           'score': float,          # final weighted score [-1, 1]
-           'label': str,            # 'BULLISH'/'BEARISH'/'NEUTRAL'
-           'headline_scores': list, # [(title, score, date), ...]
-           'num_headlines': int
-       }
-
-    Label thresholds:
-    score > 0.15  → 'BULLISH'
-    score < -0.15 → 'BEARISH'
-    else          → 'NEUTRAL'
     """
-    pass
+    headline_scores = []
+    daily_scores = defaultdict(list)
+
+    for item in news:
+        title = item["title"]
+        summary = item.get("summary", "")
+        dt: datetime = item["publishTime"]
+        date = dt.date()
+
+        text = title + (". " + item["summary"] if summary != title else "")
+        score = score_headline(finbert, text)
+
+        headline_scores.append((title, score, date))
+        daily_scores[date].append(score)
+
+    daily_avg = []
+    for date, scores in daily_scores.items():
+        avg_score = sum(scores) / len(scores)
+        daily_avg.append((date, avg_score))
+
+    daily_avg.sort(key=lambda x: x[0], reverse=True)
+
+    weighted_sum = 0.0
+    weight_total = 0.0
+
+    for i, (date, score) in enumerate(daily_avg):
+        if i >= len(RECENCY_WEIGHTS):
+            break
+
+        w = RECENCY_WEIGHTS[i]
+        weighted_sum += score * w
+        weight_total += w
+
+    final_score = weighted_sum / weight_total if weight_total > 0 else 0.0
+
+    if final_score > 0.15:
+        label = "BULLISH"
+    elif final_score < -0.15:
+        label = "BEARISH"
+    else:
+        label = "NEUTRAL"
+
+    return {
+        "score": final_score,
+        "label": label,
+        "headline_scores": headline_scores,
+        "num_headlines": len(news),
+    }
 
 
 # ── Main Entry Point ──────────────────────────────────────────────────────────
@@ -260,12 +239,43 @@ def aggregate_sentiment(finbert, news: list[dict]) -> dict:
 def get_sentiment(ticker: str, company_name: str) -> dict | None:
     """
     Full sentiment pipeline for one stock.
-
-    TODO:
-    1. load_finbert()
-    2. fetch_news(ticker, company_name)
-    3. If news is empty → return None (signals price-only fallback)
-    4. aggregate_sentiment(finbert, news)
-    5. Return result dict
     """
-    pass
+    model = load_finbert()
+    articles = fetch_news(ticker, company_name)
+    
+    if len(articles) == 0:
+        return None
+    
+    sentiment = aggregate_sentiment(model, articles)
+    return sentiment
+
+if __name__ == "__main__":
+    import random
+    with open("tickers.json", "r") as f:
+        ticks = json.load(f)
+    
+    all_news = {}
+    count = 0
+    keys = list(ticks.keys())
+    random.shuffle(keys)
+    tickers = {key: ticks[key] for key in keys}
+
+    for company_name, ticker in tickers.items():
+        all_news[company_name] = get_sentiment(ticker, company_name)
+        count += 1
+        if count == 6:
+            break
+
+    for company, sentiment in all_news.items():
+        print(f"\nCOMPANY: {company}")
+        if sentiment is None:
+            print("  No news found — price only fallback")
+        else:
+            print(f"  Score:        {sentiment['score']:.4f}")
+            print(f"  Label:        {sentiment['label']}")
+            print(f"  Num Headlines:{sentiment['num_headlines']}")
+            print("\n  Headlines:")
+            for title, score, date in sentiment['headline_scores']:
+                sentiment_emoji = "🟢" if score > 0.15 else "🔴" if score < -0.15 else "⚪"
+                print(f"  {sentiment_emoji} [{date}] {score:+.3f} | {title[:80]}")
+        print("+" * 100)
