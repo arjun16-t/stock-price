@@ -56,6 +56,18 @@ def _deduplicate(articles: list[dict]) -> list[dict]:
             unique.append(article)
     return unique
 
+def _isrelevant(headline: str, company_name: str, ticker: str) -> bool:
+    headline_lower = headline.lower()
+
+    name_words = [w.lower() for w in company_name.split() if len(w) > 3]
+    ticker_clean = ticker.replace(".NS", "").lower()
+
+    return(
+        any(word in headline_lower for word in name_words) or
+        ticker_clean in headline_lower
+    )
+
+
 
 # ── Load FinBERT ──────────────────────────────────────────────────────────────
 
@@ -153,9 +165,10 @@ def fetch_news(ticker: str, company_name: str) -> list[dict]:
     """
     yfin = fetch_yfinance_news(ticker)
     rss = fetch_google_news(company_name)
-    ls = yfin + rss
+    combined = yfin + rss
+    combined = [a for a in combined if _isrelevant(a['title'], company_name, ticker)]
 
-    ordered_list = _deduplicate(ls)
+    ordered_list = _deduplicate(combined)
     
     ordered_list.sort(key=lambda x: x['publishTime'], reverse=True)
 
@@ -173,7 +186,7 @@ def score_headline(finbert, headline: str) -> float:
     """
     result = finbert(headline[:400])
     scores = result[0] if isinstance(result, list) else result
-    print(scores, type(scores))
+    # print(scores, type(scores))
     
     pos = next(s['score'] for s in scores if s['label'] == 'positive')
     neg = next(s['score'] for s in scores if s['label'] == 'negative')
@@ -262,8 +275,8 @@ if __name__ == "__main__":
 
     for company_name, ticker in tickers.items():
         all_news[company_name] = get_sentiment(ticker, company_name)
-        count += 1
-        if count == 6:
+        count += 10
+        if count == 1:
             break
 
     for company, sentiment in all_news.items():

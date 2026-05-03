@@ -4,6 +4,8 @@ import pandas as pd
 import numpy as np
 import joblib
 import json
+
+from rapidfuzz import fuzz
 import plotly.graph_objects as go
 from pandas.tseries.offsets import BDay
 from sklearn.preprocessing import MinMaxScaler
@@ -40,30 +42,20 @@ def load_models() -> dict:
     
     return models
 
-
-@st.cache_resource
-def load_scalers() -> dict:
-    """
-    Load saved scalers dict from disk.
-    """
-    scalers = joblib.load(f"{MODELS_DIR}/scalers.joblib")
-    return scalers
-
 @st.cache_data
-def load_ticker_map() -> dict[str, str]:
-    """
-    Load company name → NSE ticker mapping from tickers.json.
-    """
-    tickers = {}
-    with open("tickers.json", "r") as file:
-        tickers = json.load(file)
+def load_all_stocks():
+    """Load all NSE stocks"""
+    with open('tickers_all.json', 'r') as f:
+        stocks_dict = json.load(f)  # {ticker: company_name}
     
-    return tickers
+    # Convert to list of tuples for easier iteration
+    stocks_list = [(ticker, name) for ticker, name in stocks_dict.items()]
+    return stocks_list, stocks_dict
 
 
 # ── Inference Pipeline ────────────────────────────────────────────────────────
 
-def prepare_inference_data(ticker: str, scalers: dict):
+def prepare_inference_data(ticker: str):
     """
     Fetch and prepare data for a single stock at inference time.
     """
@@ -77,13 +69,9 @@ def prepare_inference_data(ticker: str, scalers: dict):
         st.error("Not enough data after computing indicators.")
         return None, None, None
     
-    if ticker in scalers.keys():
-        scaler = scalers[ticker]
-        scaled_stock = scaler.transform(stock[get_feature_columns()])
-    else:
-        scaler = MinMaxScaler()
-        scaled_stock = scaler.fit_transform(stock[get_feature_columns()])
-    
+    scaler = MinMaxScaler()
+    scaled_stock = scaler.fit_transform(stock[get_feature_columns()])
+
     input_window = scaled_stock[-WINDOW_SIZE:]
     input_window = np.expand_dims(input_window, axis=0)     # shape (1, WINDOW_SIZE, num_features)
 
@@ -115,6 +103,75 @@ def predict(model, input_window: np.ndarray, last_close: float):
 
 # ── UI Components ─────────────────────────────────────────────────────────────
 
+def calculate_match_score(query, ticker, company_name):
+    """
+    Calculate weighted score for a stock.
+    """
+    query_upper = query.upper().strip()
+
+    ticker_score = fuzz.ratio(query_upper, ticker)
+    
+    company_score = fuzz.token_sort_ratio(query_upper, company_name.upper())
+    
+    final_score = (0.6 * ticker_score) + (0.4 * company_score)
+    
+    return final_score
+
+@st.cache_data
+def fuzzy_search(query, threshold=85, top_k=5):
+    """
+    Search for stocks matching the query.
+    
+    Returns:
+    - results: list of formatted strings ["INFY — Infosys Limited", ...]
+    - ticker_map: dict to map display string back to ticker
+    """
+    if not query or len(query.strip()) == 0:
+        return [], {}
+    
+    stocks_list, stocks_dict = load_all_stocks()
+    
+    # Score all stocks
+    scored_results = []
+    for ticker, company_name in stocks_list:
+        score = calculate_match_score(
+            query, ticker, company_name
+        )
+        scored_results.append({
+            'ticker': ticker,
+            'company': company_name,
+            'score': score
+        })
+    
+    # Filter: keep results >= threshold, OR top 1 if none above threshold
+    above_threshold = [r for r in scored_results if r['score'] >= threshold]
+    
+    if above_threshold:
+        results = above_threshold
+    else:
+        # No results above threshold: return top 1 suggestion
+        results = sorted(scored_results, key=lambda x: x['score'], reverse=True)[:5]
+    
+    # Sort by score descending and take top 5
+    results = sorted(results, key=lambda x: x['score'], reverse=True)[:top_k]
+    
+    # Format for display and create reverse mapping
+    formatted_results = []
+    ticker_map = {}
+    
+    for r in results:
+        display_string = f"{r['ticker']} — {r['company']}"
+        formatted_results.append(display_string)
+        ticker_map[display_string] = r['ticker']
+    
+    return formatted_results, ticker_map
+
+def get_all_stocks_for_fallback():
+    """Get all stocks as fallback (for initial display)"""
+    _, stocks_dict = load_all_stocks()
+    formatted = [f"{ticker} — {name}" for ticker, name in stocks_dict.items()]
+    return formatted, {f"{ticker} — {name}": ticker for ticker, name in stocks_dict.items()}
+
 def render_price_chart(df: pd.DataFrame, predicted_price: float, ticker: str):
     """
     Render an interactive Plotly candlestick chart with predicted price marker.
@@ -122,7 +179,6 @@ def render_price_chart(df: pd.DataFrame, predicted_price: float, ticker: str):
 
     df['Date'] = pd.to_datetime(df['Date'])
     df_last = df.tail(60)
-    
 
     fig = go.Figure()
     fig.add_trace(go.Candlestick(
@@ -157,7 +213,7 @@ def render_price_chart(df: pd.DataFrame, predicted_price: float, ticker: str):
         line_dash="dash",
         line_color=color,
         annotation_text="Predicted Price",
-        annotation_position="top right"
+        annotation_position="top left"
     )
 
     fig.update_layout(
@@ -205,25 +261,43 @@ def render_metrics(predicted_price: float, last_close: float,
 # ── Main App ──────────────────────────────────────────────────────────────────
 
 def main():
-    st.title("📈 Indian Stock Market Predictor")
+    st.title("Indian Stock Market Predictor")
     st.caption("Predicts next day closing price and opening direction using GRU, LSTM and Transformer models")
 
     # Load resources
     models  = load_models()
-    scalers = load_scalers()
-    ticker_map = load_ticker_map()
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
     st.sidebar.header("Settings")
 
-    # selectbox natively supports typing-to-search in Streamlit
-    selected_company = st.sidebar.selectbox(
-        "Search Company / Ticker", 
-        options=list(ticker_map.keys()),
-        help="Type the name of the company to search"
+    st.sidebar.write("### Search Company / Ticker")
+
+    # Text input for search query
+    search_query = st.sidebar.text_input(
+        label="Type ticker or company name",
+        placeholder="e.g., 'INFY' or 'Infosys'",
+        help="Search by ticker or company name"
     )
-    # Resolve selection to the actual NSE ticker
-    ticker = ticker_map[selected_company]
+    
+    if search_query and len(search_query) > 0:
+        results, ticker_map = fuzzy_search(search_query, threshold=85, top_k=5)
+    else:
+        # Show all stocks if no search query
+        results, ticker_map = get_all_stocks_for_fallback()
+
+    # Selectbox with search results
+    if results:
+        selected_company = st.sidebar.selectbox(
+            "Select from results",
+            options=results,
+            help="Click to select a stock"
+        )
+        
+        # Resolve selection to ticker
+        ticker = ticker_map[selected_company]
+    else:
+        st.sidebar.warning("No stocks found. Try a different search.")
+        ticker = None
 
     model_name = st.sidebar.radio(
         "Select Model", 
@@ -240,7 +314,7 @@ def main():
     if st.button('Predict Next Day', type='primary', use_container_width=True):
         with st.spinner(f'Fetching live data and running {model_name.upper()} prediction...'):
             
-            input_window, last_close, df = prepare_inference_data(ticker, scalers)
+            input_window, last_close, df = prepare_inference_data(ticker)
 
             if input_window is None:
                 st.error(f'Not enough recent data available for {selected_company} ({ticker}). Please try another stock.')
