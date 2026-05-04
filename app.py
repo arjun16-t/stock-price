@@ -46,10 +46,10 @@ def load_models() -> dict:
 def load_all_stocks():
     """Load all NSE stocks"""
     with open('tickers_all.json', 'r') as f:
-        stocks_dict = json.load(f)  # {ticker: company_name}
+        stocks_dict = json.load(f)
     
     # Convert to list of tuples for easier iteration
-    stocks_list = [(ticker, name) for ticker, name in stocks_dict.items()]
+    stocks_list = [(name, ticker) for name, ticker in stocks_dict.items()]
     return stocks_list, stocks_dict
 
 
@@ -103,18 +103,21 @@ def predict(model, input_window: np.ndarray, last_close: float):
 
 # ── UI Components ─────────────────────────────────────────────────────────────
 
-def calculate_match_score(query, ticker, company_name):
+def calculate_match_score(query, company_name, ticker):
     """
     Calculate weighted score for a stock.
     """
     query_upper = query.upper().strip()
 
-    ticker_score = fuzz.ratio(query_upper, ticker)
+    if ticker.startswith(query_upper):
+        ticker_score = 100
+    else:
+        ticker_score = fuzz.ratio(query_upper, ticker)
     
     company_score = fuzz.token_sort_ratio(query_upper, company_name.upper())
     
     final_score = (0.6 * ticker_score) + (0.4 * company_score)
-    
+
     return final_score
 
 @st.cache_data
@@ -133,10 +136,11 @@ def fuzzy_search(query, threshold=85, top_k=5):
     
     # Score all stocks
     scored_results = []
-    for ticker, company_name in stocks_list:
+    for company_name, ticker in stocks_list:
         score = calculate_match_score(
-            query, ticker, company_name
+            query, company_name, ticker
         )
+        # print(f"\033[92mTICKER: {ticker}\033[0m")
         scored_results.append({
             'ticker': ticker,
             'company': company_name,
@@ -332,6 +336,8 @@ def main():
                     st.divider()
                     st.subheader('Raw Data (Last 10 Trading Days)')
                     st.dataframe(df.tail(10), use_container_width=True)
+    else:
+        st.info("Please select a stock to proceed.")
 
 
 if __name__ == "__main__":
