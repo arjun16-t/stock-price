@@ -1,3 +1,6 @@
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -13,6 +16,7 @@ from sklearn.preprocessing import MinMaxScaler
 from data.fetch import fetch_for_inference
 from data.features import add_technical_indicators, add_targets, get_feature_columns
 from data.dataset import WINDOW_SIZE
+from sentiment import get_sentiment
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -37,8 +41,12 @@ def load_models() -> dict:
 
     model_list = ['gru', 'lstm', 'transformer']
     for model in model_list:
-        curr_model = load_model(f"{MODELS_DIR}/{model}.keras", compile=False)
-        models[model] = curr_model
+        try:
+            curr_model = load_model(f"{MODELS_DIR}/{model}.keras", compile=False)
+            models[model] = curr_model
+        except Exception as e:
+            models[model] = None
+            st.warning(f"Failed to load {model}: {e}")
     
     return models
 
@@ -96,12 +104,29 @@ def predict(model, input_window: np.ndarray, last_close: float):
 
     direction_prob = pred_dir_prob[0]
     direction_label = 'UP ↑' if direction_prob > 0.5 else 'DOWN ↓'
-
     confidence = direction_prob if direction_prob > 0.5 else (1 - direction_prob)
 
-    return (predicted_price, direction_label, confidence)
+    return (predicted_price, direction_label, confidence, direction_prob)
 
-# ── UI Components ─────────────────────────────────────────────────────────────
+def fused_prediction(predicted_price: float, last_close: float,
+                     dir_prob: float, sentiment: dict | None,
+                     alpha: float = 0.7):
+    """
+    Combine price model output with sentiment score.
+    """
+    if not sentiment:
+        return (predicted_price, dir_prob, False)
+    
+    sentiment_prob = (sentiment['score'] + 1) / 2
+
+    fused_dir_prob = (sentiment_prob * (1 - alpha)) + (dir_prob * alpha)
+
+    sentiment_adjustment = (1 - alpha) * sentiment['score'] * 0.01
+    fused_price = predicted_price * (1 + sentiment_adjustment)
+
+    return (fused_price, fused_dir_prob, True)
+
+# ── Search Mechanics ─────────────────────────────────────────────────────────────
 
 def calculate_match_score(query, company_name, ticker):
     """
@@ -176,6 +201,8 @@ def get_all_stocks_for_fallback():
     formatted = [f"{ticker} — {name}" for ticker, name in stocks_dict.items()]
     return formatted, {f"{ticker} — {name}": ticker for ticker, name in stocks_dict.items()}
 
+# ── UI Components ─────────────────────────────────────────────────────────────
+
 def render_price_chart(df: pd.DataFrame, predicted_price: float, ticker: str):
     """
     Render an interactive Plotly candlestick chart with predicted price marker.
@@ -230,7 +257,6 @@ def render_price_chart(df: pd.DataFrame, predicted_price: float, ticker: str):
 
     st.plotly_chart(fig, use_container_width=True)
 
-
 def render_metrics(predicted_price: float, last_close: float,
                    direction: str, confidence: float, model_name: str):
     """
@@ -260,6 +286,62 @@ def render_metrics(predicted_price: float, last_close: float,
         label="Model Used",
         value=model_name.upper()
     )
+
+def render_sentiment(sentiment: dict):
+    """
+    Render sentiment score card and news feed.
+    """
+    st.subheader("📰 News Sentiment")
+    col1, col2, col3 = st.columns(3)
+
+    label = sentiment['label']
+    score = sentiment['score']
+    emoji = "🟢" if score > 0.15 else "🔴" if score < -0.15 else "⚪"
+
+    col1.metric(
+        label="Overall Sentiment",
+        value=f"{emoji} {label}",
+        help="Market sentiment for the current stock"
+    )
+    col2.metric(
+        label="Score",
+        value=f"{sentiment['score']:+.3f}",
+        help="How much our model is confident for the stock"
+    )
+    col3.metric(
+        label="Headlines Analysed",
+        value=sentiment['num_headlines'],
+        help="Number of headlines analysed for this stock to get the score"
+    )
+
+    st.divider()
+
+    with st.container(border=True):
+        for title, score, date in sentiment['headline_scores']:
+            emoji = "🟢" if score > 0.15 else "🔴" if score < -0.15 else "⚪"
+            col1, col2, col3 = st.columns([0.05, 0.80, 0.15])
+            col1.write(emoji)
+            col2.write(f"**{title[:100]}**")
+            col2.caption(str(date))
+            col3.write(f"`{score:+.3f}`")
+            st.divider()
+
+def render_fusion_explanation(dir_prob_price: float, sentiment: dict,
+                               fused_dir_prob: float, alpha: float = 0.7):
+    """
+    Show how price model and sentiment combined.
+    """
+    price_direction = "UP" if dir_prob_price > 0.5 else "DOWN"
+    price_conf = dir_prob_price if dir_prob_price > 0.5 else 1 - dir_prob_price
+    fused_direction = "UP" if fused_dir_prob > 0.5 else "DOWN"
+    fused_conf = fused_dir_prob if fused_dir_prob > 0.5 else 1 - fused_dir_prob
+
+    st.info(
+    f"**Price model:** {price_direction} ({price_conf:.1%} confidence)  \n"
+    f"**Sentiment signal:** {sentiment['label']} ({sentiment['score']:+.3f})  \n"
+    f"**Combined** ({int(alpha*100)}% price + {int((1-alpha)*100)}% sentiment): "
+    f"{fused_direction} ({fused_conf:.1%} confidence)"
+)
 
 
 # ── Main App ──────────────────────────────────────────────────────────────────
@@ -310,32 +392,53 @@ def main():
     )
     # Grab the selected model object from the loaded models dictionary
     model = models[model_name]
+    if model is None:
+        st.error("Choose another model")
 
     show_raw_data = st.sidebar.checkbox("Show raw data", value=False)
 
     # ── Main Panel ────────────────────────────────────────────────────────────
 
     if st.button('Predict Next Day', type='primary', use_container_width=True):
-        with st.spinner(f'Fetching live data and running {model_name.upper()} prediction...'):
-            
-            input_window, last_close, df = prepare_inference_data(ticker)
 
+        with st.spinner(f'Fetching live data and running {model_name.upper()} prediction...'):
+            input_window, last_close, df = prepare_inference_data(ticker)
             if input_window is None:
                 st.error(f'Not enough recent data available for {selected_company} ({ticker}). Please try another stock.')
             else:
-                # Run the prediction
-                predicted_price, direction, confidence = predict(model, input_window, last_close)
-                
-                # Render the UI components
-                render_metrics(predicted_price, last_close, direction, confidence, model_name)
-                st.divider()
-                render_price_chart(df, predicted_price, ticker)
+                predicted_price, direction, confidence, dir_prob = predict(model, input_window, last_close)
 
-                # Show dataframe if toggle is checked
-                if show_raw_data:
-                    st.divider()
-                    st.subheader('Raw Data (Last 10 Trading Days)')
-                    st.dataframe(df.tail(10), use_container_width=True)
+        with st.spinner('Analyzing news sentiment...'):
+            try:
+                company_name = selected_company.split(" — ")[1] if " — " in selected_company else selected_company
+                sentiment = get_sentiment(ticker, selected_company)
+            except Exception:
+                st.warning(f"Could not get news for {ticker} proceeding with price-only predictions")
+                sentiment = None
+
+        fused_price, fused_dir_prob, is_fused = fused_prediction(predicted_price, last_close, dir_prob, sentiment)
+        fused_dir_label = 'UP ↑' if fused_dir_prob > 0.5 else 'DOWN ↓'
+        fused_confidence = fused_dir_prob if fused_dir_prob > 0.5 else (1 - fused_dir_prob)
+
+        # Render the UI components
+        render_metrics(predicted_price, last_close, direction, confidence, model_name)
+        st.divider()
+
+        if is_fused:
+            render_fusion_explanation(dir_prob, sentiment, fused_dir_prob)
+        st.divider()
+
+        render_price_chart(df, predicted_price, ticker)
+        if is_fused:
+            render_sentiment(sentiment)
+        else:
+            st.caption("⚠️ No recent news found — showing price prediction only")
+        
+        # Show dataframe if toggle is checked
+        if show_raw_data:
+            st.divider()
+            st.subheader('Raw Data (Last 10 Trading Days)')
+            st.dataframe(df.tail(10), use_container_width=True)
     else:
         st.info("Please select a stock to proceed.")
 

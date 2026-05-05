@@ -8,3 +8,4 @@ temp.py
 saved_models/
 *.csv
 .env
+check_tf.py
