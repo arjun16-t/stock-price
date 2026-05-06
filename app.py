@@ -317,11 +317,11 @@ def render_sentiment(sentiment: dict):
     st.divider()
 
     with st.container(border=True):
-        for title, score, date in sentiment['headline_scores']:
+        for title, score, date, link in sentiment['headline_scores']:
             emoji = "🟢" if score > 0.15 else "🔴" if score < -0.15 else "⚪"
             col1, col2, col3 = st.columns([0.05, 0.80, 0.15])
             col1.write(emoji)
-            col2.write(f"**{title[:100]}**")
+            col2.write(f"**[{title[:100]}]({link})**")
             col2.caption(str(date))
             col3.write(f"`{score:+.3f}`")
             st.divider()
@@ -399,19 +399,20 @@ def main():
 
     # ── Main Panel ────────────────────────────────────────────────────────────
 
-    if st.button('Predict Next Day', type='primary', use_container_width=True):
+    if ticker and st.button('Predict Next Day', type='primary', use_container_width=True):
 
         with st.spinner(f'Fetching live data and running {model_name.upper()} prediction...'):
             input_window, last_close, df = prepare_inference_data(ticker)
             if input_window is None:
                 st.error(f'Not enough recent data available for {selected_company} ({ticker}). Please try another stock.')
+                st.stop()
             else:
                 predicted_price, direction, confidence, dir_prob = predict(model, input_window, last_close)
 
         with st.spinner('Analyzing news sentiment...'):
             try:
                 company_name = selected_company.split(" — ")[1] if " — " in selected_company else selected_company
-                sentiment = get_sentiment(ticker, selected_company)
+                sentiment = get_sentiment(ticker, company_name)
             except Exception:
                 st.warning(f"Could not get news for {ticker} proceeding with price-only predictions")
                 sentiment = None
@@ -426,7 +427,9 @@ def main():
 
         if is_fused:
             render_fusion_explanation(dir_prob, sentiment, fused_dir_prob)
-        st.divider()
+            st.divider()
+            st.subheader("Fused Prediction (Price + Sentiment)")
+            render_metrics(fused_price, last_close, fused_dir_label, fused_confidence, model_name)
 
         render_price_chart(df, predicted_price, ticker)
         if is_fused:

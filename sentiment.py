@@ -202,6 +202,7 @@ def aggregate_sentiment(finbert, news: list[dict]) -> dict:
 
     for item in news:
         title = item["title"]
+        link = item["url"]
         summary = item.get("summary", "")
         dt: datetime = item["publishTime"]
         date = dt.date()
@@ -209,7 +210,7 @@ def aggregate_sentiment(finbert, news: list[dict]) -> dict:
         text = title + (". " + item["summary"] if summary != title else "")
         score = score_headline(finbert, text)
 
-        headline_scores.append((title, score, date))
+        headline_scores.append((title, score, date, link))
         daily_scores[date].append(score)
 
     daily_avg = []
